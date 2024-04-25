@@ -1,4 +1,5 @@
 // ignore_for_file: no_leading_underscores_for_local_identifiers
+//Update it after release.
 
 import 'dart:async';
 import 'dart:convert';
@@ -71,6 +72,7 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
+  Map<String, List<double>> customSoilTypes = {};
   double? currentLatitude;
   double? currentLongitude;
   StreamSubscription<LocationData>? locationSubscription;
@@ -89,7 +91,7 @@ class _MyAppState extends State<MyApp> {
       StreamController<double?>();
   StreamController<double?> resistanceStreamController =
       StreamController<double?>();
-  Map<String, List<double>> customSoilTypes = {
+  Map<String, List<double>> standardSoilTypes = {
     'Loam': [0.56, -0.059],
     'Sandy Loam': [0.50, -0.062],
   };
@@ -97,7 +99,6 @@ class _MyAppState extends State<MyApp> {
     try {
       String csvData = await databaseHelper.convertDataToCsv();
       File csvFile = await databaseHelper.saveCsvToFile(csvData);
-
       Share.shareFiles([csvFile.path], text: 'Sensor Data CSV');
     } catch (e) {
       print("Error exporting data: $e");
@@ -109,8 +110,8 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
+    loadSoilTypes(); // Consolidate all soil type loading here
     LocationService().initializeLocationService();
-    // Listen to the location stream and update state with new data
     locationSubscription =
         LocationService().locationStream.listen((locationData) {
       setState(() {
@@ -123,6 +124,43 @@ class _MyAppState extends State<MyApp> {
       final formattedDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(now);
       return 'Date: $formattedDate';
     });
+  }
+
+  Future<void> loadSoilTypes() async {
+    // Initialize with standard soil types
+    customSoilTypes = {...standardSoilTypes};
+
+    // Load custom soil types from the database
+    final types = await databaseHelper.getCustomSoilTypes();
+    setState(() {
+      // Merge custom soil types into the map
+      customSoilTypes.addAll(convertToSoilTypeMap(types));
+      if (customSoilTypes.isNotEmpty) {
+        _selectedSoilType = customSoilTypes.keys
+            .first; // Optionally set the first available type as the default
+      }
+    });
+  }
+
+  Future<void> loadCustomSoilTypes() async {
+    final types = await databaseHelper.getCustomSoilTypes();
+    setState(() {
+      // Initialize with standard soil types and then add/override with custom ones.
+      customSoilTypes = {...standardSoilTypes, ...convertToSoilTypeMap(types)};
+    });
+  }
+
+  Map<String, List<double>> convertToSoilTypeMap(
+      List<Map<String, dynamic>> types) {
+    Map<String, List<double>> soilTypeMap = {};
+    for (var type in types) {
+      // Assuming 'name' is the column for soil type name, 'constantA', and 'constantB' are the columns for the constants
+      String name = type['name'] ?? 'Unknown';
+      double constantA = type['constantA']?.toDouble() ?? 0.0;
+      double constantB = type['constantB']?.toDouble() ?? 0.0;
+      soilTypeMap[name] = [constantA, constantB];
+    }
+    return soilTypeMap;
   }
 
   @override
@@ -142,44 +180,35 @@ class _MyAppState extends State<MyApp> {
     String newConstantB = '';
     BuildContext dialogContext = _scaffoldKey.currentContext!;
 
-    // Ensure correct BuildContext usage:
     showDialog(
-      context:
-          dialogContext, // Assuming context is available within the widget tree
+      context: dialogContext,
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text('Add New Soil Type'),
           content: SingleChildScrollView(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                // Set a maximum height for the dialog if necessary
-                maxHeight: MediaQuery.of(context).size.height * 0.7,
-              ),
-              // Wrap with SingleChildScrollView
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  TextField(
-                    onChanged: (value) => newSoilTypeName = value,
-                    decoration:
-                        const InputDecoration(labelText: 'Soil Type Name'),
-                  ),
-                  TextField(
-                    onChanged: (value) => newConstantA = value,
-                    decoration:
-                        const InputDecoration(labelText: 'Constant A (m)'),
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                  ),
-                  TextField(
-                    onChanged: (value) => newConstantB = value,
-                    decoration:
-                        const InputDecoration(labelText: 'Constant B (c)'),
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                  ),
-                ],
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                TextField(
+                  onChanged: (value) => newSoilTypeName = value,
+                  decoration:
+                      const InputDecoration(labelText: 'Soil Type Name'),
+                ),
+                TextField(
+                  onChanged: (value) => newConstantA = value,
+                  decoration:
+                      const InputDecoration(labelText: 'Constant A (m)'),
+                  keyboardType: TextInputType.numberWithOptions(
+                      signed: true, decimal: true),
+                ),
+                TextField(
+                  onChanged: (value) => newConstantB = value,
+                  decoration:
+                      const InputDecoration(labelText: 'Constant B (c)'),
+                  keyboardType: TextInputType.numberWithOptions(
+                      signed: true, decimal: true),
+                ),
+              ],
             ),
           ),
           actions: <Widget>[
@@ -189,7 +218,7 @@ class _MyAppState extends State<MyApp> {
             ),
             TextButton(
               child: const Text('Save'),
-              onPressed: () {
+              onPressed: () async {
                 if (newSoilTypeName.isEmpty ||
                     newConstantA.isEmpty ||
                     newConstantB.isEmpty) {
@@ -197,15 +226,30 @@ class _MyAppState extends State<MyApp> {
                     const SnackBar(content: Text("Complete all fields")),
                   );
                 } else {
-                  // Ensure setState calls are within a StatefulWidget:
-                  setState(() {
-                    customSoilTypes[newSoilTypeName] = [
-                      double.tryParse(newConstantA) ?? 0.0,
-                      double.tryParse(newConstantB) ?? 0.0
-                    ];
-                    _selectedSoilType = newSoilTypeName;
-                  });
-                  Navigator.of(context).pop();
+                  double? constantA = double.tryParse(newConstantA);
+                  double? constantB = double.tryParse(newConstantB);
+                  if (constantA == null || constantB == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text("Invalid numbers for constants")),
+                    );
+                  } else {
+                    try {
+                      await databaseHelper.insertCustomSoilType(
+                        newSoilTypeName,
+                        constantA,
+                        constantB,
+                      );
+                      await loadSoilTypes(); // Reload soil types from the database
+                      Navigator.of(context)
+                          .pop(); // Close the dialog after saving
+                    } catch (e) {
+                      print('Error saving soil type: $e');
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text("Failed to save soil type: $e")),
+                      );
+                    }
+                  }
                 }
               },
             ),
@@ -232,7 +276,6 @@ class _MyAppState extends State<MyApp> {
       (results) {
         for (ScanResult r in results) {
           if (r.device.platformName == "JPLSoil") {
-            // Connect to the "JPLSoil" device
             _connectToDevice(r.device);
             break; // Stop scanning when the target device is found
           }
@@ -249,10 +292,20 @@ class _MyAppState extends State<MyApp> {
     if (_selectedSoilType == 'Loam') {
       m = 0.56;
       c = -0.059;
-    } else {
+    } else if (_selectedSoilType == 'Sandy Loam') {
       m = 0.50;
       c = -0.062;
+    } else if (customSoilTypes.containsKey(_selectedSoilType)) {
+      List<double>? values = customSoilTypes[_selectedSoilType];
+      m = values![0];
+      c = values[1];
+    } else {
+      // Handle case where _selectedSoilType is not found
+      print('Selected soil type is not recognized');
+      return;
     }
+
+    // Continue with the rest of your function using m and c
 
     // Remove the local variable declarations
 
@@ -306,6 +359,7 @@ class _MyAppState extends State<MyApp> {
               if (characteristic.uuid.toString() ==
                   "6e400003-b5a3-f393-e0a9-e50e24dcca9e") {
                 characteristic.setNotifyValue(true);
+                // ignore: deprecated_member_use
                 characteristic.value.listen((value) {
                   _onDataAvailable(value);
                 });
@@ -413,7 +467,7 @@ class _MyAppState extends State<MyApp> {
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
                   const DataTile(
-                    title: 'Temperature',
+                    title: 'Temperature:',
                     backgroundColor: Colors.teal,
                   ),
                   StreamBuilder<String>(
@@ -465,37 +519,44 @@ class _MyAppState extends State<MyApp> {
                   )),
               ),
               const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              Column(
                 children: [
-                  SizedBox(
-                    width: 150,
-                    height: 110,
+                  // Full-width 'Connect' button
+                  Container(
+                    width: double.infinity,
+                    height: 60, // Adjust the height as needed
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10), // Add some horizontal padding
                     child: ElevatedButton(
                       onPressed: () {
-                        // Start scanning for the "JPLSoil" device
-                        _startScanning(context);
+                        if (!isScanning) {
+                          _startScanning(context);
+                        }
                       },
                       style: ElevatedButton.styleFrom(
-                        shape: const CircleBorder(),
-                        padding: const EdgeInsets.all(40),
-                        foregroundColor: Colors.white,
-                        backgroundColor: Colors.grey,
                         elevation: 5,
+                        backgroundColor: connectedDevice != null
+                            ? Colors.green.shade900
+                            : Colors.lightGreen,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
-                      child: Text(connectedDevice != null
-                          ? 'Connected to Device'
-                          : 'READ'),
+                      child: Text(
+                        connectedDevice != null
+                            ? 'Connected to ${connectedDevice!.platformName}'
+                            : 'Connect',
+                        style: const TextStyle(fontSize: 20),
+                      ),
                     ),
                   ),
-                  Container(
-                      width: 150,
-                      height: 110,
-                      decoration: BoxDecoration(
-                        borderRadius:
-                            BorderRadius.circular(10), // Apply rounded corners
-                      ),
-                      child: ElevatedButton(
+                  const SizedBox(height: 20), // Spacing between the buttons
+                  // Row with three circular buttons
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      // Reuse the button styles for the other buttons but make them smaller
+                      _buildCircleButton(
                         onPressed: () {
                           final sensorDataEntry = SensorData(
                             moisture:
@@ -529,70 +590,61 @@ class _MyAppState extends State<MyApp> {
                             latestResistanceValue = null;
                             latestDateTime = null;
                           });
+
+                          // Code for first circular button
                         },
-                        style: ElevatedButton.styleFrom(
-                            shape: const CircleBorder(),
-                            padding: const EdgeInsets.all(40),
-                            foregroundColor: Colors.white,
-                            backgroundColor:
-                                const Color.fromARGB(255, 154, 97, 76),
-                            elevation: 5),
-                        child: const Text('Save Data'),
-                      )),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  Container(
-                    width: 150,
-                    height:
-                        110, // Makes the button span the width of the screen
-                    decoration: BoxDecoration(
-                      borderRadius:
-                          BorderRadius.circular(30), // Apply rounded corners
-                    ),
-                    child: ElevatedButton(
-                      onPressed: () {
-                        navigatorKey.currentState?.push(
-                          MaterialPageRoute(
-                              builder: (context) => const SensorDataScreen()),
-                        );
-                      },
-                      style: ElevatedButton.styleFrom(
-                        shape: const CircleBorder(),
-                        // padding: const EdgeInsets.all(40),
-                        foregroundColor: Colors.white,
+                        backgroundColor: Colors.red.shade200,
+                        label: 'Read & Save',
+                      ),
+                      _buildCircleButton(
+                        onPressed: () {
+                          navigatorKey.currentState?.push(
+                            MaterialPageRoute(
+                                builder: (context) => const SensorDataScreen()),
+                          );
+                        },
                         backgroundColor: Colors.red.shade300,
-                        elevation: 5,
+                        label: 'View Data',
                       ),
-                      child: const Text('View Saved Sensor Data'),
-                    ),
-                  ),
-                  // New Button for Exporting and Sharing CSV
-                  Container(
-                    width: 150,
-                    height: 110,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(30),
-                    ),
-                    child: ElevatedButton(
-                      onPressed: _exportAndShareCsv,
-                      style: ElevatedButton.styleFrom(
-                        shape: const CircleBorder(),
-                        // padding: const EdgeInsets.all(40),
-                        foregroundColor: Colors.white,
-                        backgroundColor:
-                            const Color.fromARGB(255, 158, 235, 69),
-                        elevation: 5, // Text color
+                      _buildCircleButton(
+                        onPressed: _exportAndShareCsv,
+                        backgroundColor: Colors.grey,
+                        label: 'Share',
                       ),
-                      child: const Text('Export and Share CSV'),
-                    ),
+                    ],
                   ),
                 ],
-              ),
+              )
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  _buildCircleButton(
+      {required VoidCallback onPressed,
+      required Color backgroundColor,
+      required String label}) {
+    return SizedBox(
+      width: 100, // Smaller size for circle buttons
+      height: 100,
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          shape: const CircleBorder(),
+          primary: backgroundColor,
+          padding: const EdgeInsets.all(20),
+          elevation: 5,
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown, // This ensures the text does not overflow
+          child: Text(
+            label,
+            textAlign: TextAlign.left, // Center the text
+            style: TextStyle(
+              fontSize: 18, // Adjust font size as needed
+            ),
           ),
         ),
       ),
@@ -733,58 +785,72 @@ class BluetoothStateProvider with ChangeNotifier {
 }
 
 class DatabaseHelper {
-  static final DatabaseHelper _instance = DatabaseHelper.internal();
+  static final DatabaseHelper _instance = DatabaseHelper._internal();
   factory DatabaseHelper() => _instance;
   static Database? _db;
 
-  DatabaseHelper.internal();
+  DatabaseHelper._internal();
 
-  Future<Database?> get db async {
+  Future<Database> get db async {
     if (_db != null) {
-      return _db;
+      return _db!;
     }
     _db = await initDb();
-    return _db;
+    return _db!;
   }
 
   Future<Database> initDb() async {
-    String databasesPath = await getDatabasesPath();
-    String path = join(databasesPath, 'sensor_data.db');
+    Directory documentsDirectory = await getApplicationDocumentsDirectory();
+    String path = join(documentsDirectory.path, 'sensor_data.db');
 
-    return await openDatabase(
-      path,
-      version: 3,
-      onCreate: (Database db, int version) async {
-        await db.execute('''
-        CREATE TABLE SensorData (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          moisture REAL,
-          resistance REAL,
-          dateTime TEXT,
-          soilType TEXT,
-          latitude REAL,  
-          longitude REAL 
-        )
-      ''');
-      },
-      onUpgrade: (Database db, int oldVersion, int newVersion) async {
-        // Handle database upgrades if necessary
-      },
-    );
+    return await openDatabase(path, version: 3, onCreate: _onCreate);
   }
 
-  // Insert data into the database
+  void _onCreate(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE SensorData (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        moisture REAL,
+        resistance REAL,
+        dateTime TEXT,
+        soilType TEXT,
+        latitude REAL,  
+        longitude REAL 
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE CustomSoilTypes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        constantA REAL,
+        constantB REAL
+      )
+    '''); // Add print for debugging. Check in other devices.
+  }
+
   Future<int> insertSensorData(SensorData sensorData) async {
-    Database? dbClient = await db;
-    return await dbClient!.insert('SensorData', sensorData.toMap());
+    final dbClient = await db;
+    return await dbClient.insert('SensorData', sensorData.toMap());
+  }
+
+  Future<void> insertCustomSoilType(
+      String name, double constantA, double constantB) async {
+    final dbClient = await db;
+    int? id = await dbClient.insert('CustomSoilTypes', {
+      'name': name,
+      'constantA': constantA,
+      'constantB': constantB,
+    });
+    print("Inserted custom soil type with ID: $id");
+  }
+
+  Future<List<Map<String, dynamic>>> getCustomSoilTypes() async {
+    final dbClient = await db;
+    return await dbClient.query('CustomSoilTypes');
   }
 
   Future<String> convertDataToCsv() async {
-    Database? dbClient = await db;
-    if (dbClient == null) {
-      throw Exception('Database not available');
-    }
-
+    final dbClient = await db;
     List<Map<String, dynamic>> maps =
         await dbClient.query('SensorData', orderBy: 'dateTime DESC');
 
@@ -805,11 +871,10 @@ class DatabaseHelper {
     return file.writeAsString(csvString);
   }
 
-  // Retrieve all sensor data from the database
   Future<List<SensorData>> getSensorDataList() async {
-    Database? dbClient = await db;
+    final dbClient = await db;
     List<Map<String, dynamic>> maps =
-        await dbClient!.query('SensorData', orderBy: 'dateTime DESC');
+        await dbClient.query('SensorData', orderBy: 'dateTime DESC');
     List<SensorData> sensorDataList = [];
 
     for (Map<String, dynamic> map in maps) {
@@ -822,8 +887,8 @@ class DatabaseHelper {
 
 class SensorData {
   int? id;
-  double? moisture; // Nullable double
-  double? resistance; // Nullable double
+  double? moisture;
+  double? resistance;
   String dateTime;
   String soilType;
   double? latitude;
@@ -840,46 +905,25 @@ class SensorData {
   });
 
   factory SensorData.fromMap(Map<String, dynamic> map) {
-    double? parseDouble(dynamic value) {
-      if (value == null || value == 'N/A') {
-        return null;
-      }
-      return value is double ? value : double.tryParse(value.toString());
-    }
-
-    String parseString(dynamic value) {
-      if (value == null) {
-        return 'N/A';
-      }
-      return value.toString();
-    }
-
-    int? parseInt(dynamic value) {
-      if (value == null) {
-        return null;
-      }
-      return value is int ? value : int.tryParse(value.toString());
-    }
-
     return SensorData(
-      id: parseInt(map['id']),
-      moisture: parseDouble(map['moisture']),
-      resistance: parseDouble(map['resistance']),
-      dateTime: parseString(map['dateTime']),
-      soilType: parseString(map['soilType']),
-      latitude: parseDouble(map['latitude']),
-      longitude: parseDouble(map['longitude']),
+      id: map['id'],
+      moisture: map['moisture'],
+      resistance: map['resistance'],
+      dateTime: map['dateTime'],
+      soilType: map['soilType'],
+      latitude: map['latitude'],
+      longitude: map['longitude'],
     );
   }
 
   Map<String, dynamic> toMap() {
     return {
-      'moisture': moisture ?? 0.0, // Replace null with default value
-      'resistance': resistance ?? 0.0, // Replace null with default value
+      'moisture': moisture,
+      'resistance': resistance,
       'dateTime': dateTime,
       'soilType': soilType,
-      'latitude': latitude ?? 0.0, // Replace null with default value
-      'longitude': longitude ?? 0.0, // Replace null with default value
+      'latitude': latitude,
+      'longitude': longitude,
     };
   }
 }
